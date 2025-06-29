@@ -1,0 +1,55 @@
+# Build directories and files
+build/CMakeCache.txt
+build/cmake_install.cmake
+build/Makefile
+build/CMakeFiles/
+build/bin/
+
+# Compiled object files
+*.o
+*.obj
+
+# Compiled dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+
+# CMake generated files
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CMakeFiles/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Don't ignore output images - these are the results we want to keep
+!build/*.jpg
+!build/*.png
+!build/*.bmp
+!build/*.tiff
+!build/*.tif
+
+# But still ignore the executable in bin directory
+build/bin/
