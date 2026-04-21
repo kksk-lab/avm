@@ -1268,6 +1268,231 @@ void join() {
 }
 
 // ========================================
+// Video Processing Function
+// ========================================
+
+/**
+ * @brief Process video stitching from multiple fisheye video sources
+ * @param front_video Path to front direction video
+ * @param back_video Path to back direction video
+ * @param left_video Path to left direction video
+ * @param right_video Path to right direction video
+ * @param output_video Path to output stitched video
+ * @return Processing status (0 for success, -1 for failure)
+ */
+int processVideoMode(const string &front_video, const string &back_video,
+					 const string &left_video, const string &right_video,
+					 const string &output_video) {
+	cout << "===========================================" << endl;
+	cout << "[SYSTEM] Starting Video Stitching Mode" << endl;
+	cout << "===========================================" << endl;
+
+	// Create output directory
+	struct stat st = { 0 };
+	if (stat("build", &st) == -1) {
+		if (mkdir("build", 0755) == 0) {
+			cout << "[INIT] Output directory created: build/" << endl;
+		}
+		else {
+			cout << "[WARNING] Unable to create output directory, will use current directory" << endl;
+		}
+	}
+
+	// Initialize corner containers
+	g_corner_front = std::vector<cv::Point2f>(8);
+	g_corner_back = std::vector<cv::Point2f>(8);
+	g_corner_left = std::vector<cv::Point2f>(8);
+	g_corner_right = std::vector<cv::Point2f>(8);
+
+	// Set camera parameters
+	float fish_scale = 0.5f;
+	float focal_length = 910.0f;
+	int dx = 3;
+	int dy = 3;
+	int fish_width = 1280;
+	int fish_height = 960;
+	float undis_scale = 1.55f;
+
+	// Fisheye to undistortion parameters
+	g_fish2undis_params = { -0.05611147, -0.05377447, 0.0115717, 0.0030788 };
+
+	// Build undistortion intrinsic matrix
+	g_intrinsic_undis = (cv::Mat_<float>(3, 3) << focal_length / dx * fish_scale, 0, fish_width / 2 * undis_scale,
+		0, focal_length / dy * fish_scale, fish_height / 2 * undis_scale,
+		0, 0, 1);
+
+	// Build original intrinsic matrix
+	g_intrinsic = (cv::Mat_<float>(3, 3) << focal_length / dx, 0, fish_width / 2,
+		0, focal_length / dy, fish_height / 2,
+		0, 0, 1);
+
+	cout << "[INIT] Camera parameters initialization completed" << endl;
+
+	// Open video input sources
+	cout << "[STEP 1] Opening video sources..." << endl;
+	cv::VideoCapture cap_f(front_video);
+	cv::VideoCapture cap_b(back_video);
+	cv::VideoCapture cap_l(left_video);
+	cv::VideoCapture cap_r(right_video);
+
+	if (!cap_f.isOpened() || !cap_b.isOpened() || !cap_l.isOpened() || !cap_r.isOpened()) {
+		cout << "[ERROR] Failed to open one or more video files" << endl;
+		cout << "  Front: " << front_video << " - " << (cap_f.isOpened() ? "OK" : "FAILED") << endl;
+		cout << "  Back: " << back_video << " - " << (cap_b.isOpened() ? "OK" : "FAILED") << endl;
+		cout << "  Left: " << left_video << " - " << (cap_l.isOpened() ? "OK" : "FAILED") << endl;
+		cout << "  Right: " << right_video << " - " << (cap_r.isOpened() ? "OK" : "FAILED") << endl;
+		return -1;
+	}
+
+	// Get video properties
+	int frame_width = static_cast<int>(cap_f.get(cv::CAP_PROP_FRAME_WIDTH));
+	int frame_height = static_cast<int>(cap_f.get(cv::CAP_PROP_FRAME_HEIGHT));
+	double fps = cap_f.get(cv::CAP_PROP_FPS);
+	int total_frames = static_cast<int>(cap_f.get(cv::CAP_PROP_FRAME_COUNT));
+
+	cout << "[SUCCESS] Video sources opened successfully" << endl;
+	cout << "  Resolution: " << frame_width << "x" << frame_height << endl;
+	cout << "  FPS: " << fps << endl;
+	cout << "  Total frames: " << total_frames << endl;
+
+	// Initialize video writer for output
+	cout << "[STEP 2] Initializing video writer..." << endl;
+	int out_width = 1596;	// Final panorama width
+	int out_height = 948;	// Final panorama height
+	int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+	cv::VideoWriter out(output_video, fourcc, fps, cv::Size(out_width, out_height));
+
+	if (!out.isOpened()) {
+		cout << "[ERROR] Failed to initialize video writer" << endl;
+		return -1;
+	}
+	cout << "[SUCCESS] Video writer initialized" << endl;
+
+	// Create undistortion object
+	Undistort undistort_handle;
+	std::vector<cv::Mat> undis2dis_front, undis2dis_back, undis2dis_left, undis2dis_right;
+
+	// Initialize bird's eye view parameters
+	init_params();
+
+	// Calibration done once using first frame
+	bool calibration_done = false;
+	int frame_count = 0;
+	int success_count = 0;
+
+	cout << "[STEP 3] Processing video frames..." << endl;
+
+	// Main video processing loop
+	cv::Mat frame_f, frame_b, frame_l, frame_r;
+	while (cap_f.read(frame_f) && cap_b.read(frame_b) &&
+		   cap_l.read(frame_l) && cap_r.read(frame_r)) {
+
+		frame_count++;
+
+		// Perform calibration on first valid frame if not done
+		if (!calibration_done) {
+			cout << "[CALIBRATION] Starting calibration with first frame..." << endl;
+
+			// Detect calibration board corners from first frames
+			bool success = true;
+			success &= detectPoints(frame_f, 20000, 0.5, g_corner_front, 0, ImageType::IMAGE_FRONT);
+			success &= detectPoints(frame_b, 20000, 0.5, g_corner_back, 0, ImageType::IMAGE_BACK);
+			success &= detectPoints(frame_l, 20000, 0.5, g_corner_left, 0, ImageType::IMAGE_LEFT);
+			success &= detectPoints(frame_r, 20000, 0.5, g_corner_right, 0, ImageType::IMAGE_RIGHT);
+
+			if (!success) {
+				cout << "[WARNING] Calibration corner detection failed for first frame, skipping frame" << endl;
+				continue;
+			}
+
+			// Calculate homography matrices
+			g_Homo_F = cv::findHomography(g_corner_front, g_corner_bird_front, 0);
+			g_Homo_B = cv::findHomography(g_corner_back, g_corner_bird_back, 0);
+			g_Homo_L = cv::findHomography(g_corner_left, g_corner_bird_left, 0);
+			g_Homo_R = cv::findHomography(g_corner_right, g_corner_bird_right, 0);
+
+			cout << "[SUCCESS] Calibration completed" << endl;
+			calibration_done = true;
+		}
+
+		// Process current frames
+		// Undistortion
+		cv::Mat front_undis = undistort_handle.undistort_func(frame_f, undis2dis_front);
+		cv::Mat back_undis = undistort_handle.undistort_func(frame_b, undis2dis_back);
+		cv::Mat left_undis = undistort_handle.undistort_func(frame_l, undis2dis_left);
+		cv::Mat right_undis = undistort_handle.undistort_func(frame_r, undis2dis_right);
+
+		// Perspective transformation to bird's eye view
+		cv::Mat bird_front_image, bird_back_image, bird_left_image, bird_right_image;
+
+		cv::warpPerspective(front_undis, bird_front_image, g_Homo_F,
+			cv::Size(792, 305), cv::INTER_LINEAR);
+		cv::warpPerspective(back_undis, bird_back_image, g_Homo_B,
+			cv::Size(792, 305), cv::INTER_LINEAR);
+		cv::warpPerspective(left_undis, bird_left_image, g_Homo_L,
+			cv::Size(1131, 281), cv::INTER_LINEAR);
+		cv::warpPerspective(right_undis, bird_right_image, g_Homo_R,
+			cv::Size(1131, 281), cv::INTER_LINEAR);
+
+		// Rotate bird's eye view images
+		cv::Mat front_rotated, back_rotated, left_rotated, right_rotated;
+
+		// Rotate front (0 degrees)
+		front_rotated = bird_front_image.clone();
+
+		// Rotate back (180 degrees)
+		cv::rotate(bird_back_image, back_rotated, cv::ROTATE_180);
+
+		// Rotate left (90 degrees clockwise)
+		cv::rotate(bird_left_image, left_rotated, cv::ROTATE_90_CLOCKWISE);
+
+		// Rotate right (270 degrees clockwise or 90 counter-clockwise)
+		cv::rotate(bird_right_image, right_rotated, cv::ROTATE_90_COUNTERCLOCKWISE);
+
+		// Create panoramic canvas
+		cv::Mat panorama = cv::Mat::zeros(948, 1596, front_rotated.type());
+
+		// Place rotated images on canvas (same as static image mode)
+		cv::Mat roi_front = panorama(cv::Rect(402, 318, front_rotated.cols, front_rotated.rows));
+		front_rotated.copyTo(roi_front);
+
+		cv::Mat roi_back = panorama(cv::Rect(402, 325, back_rotated.cols, back_rotated.rows));
+		back_rotated.copyTo(roi_back);
+
+		cv::Mat roi_left = panorama(cv::Rect(0, 0, left_rotated.cols, left_rotated.rows));
+		left_rotated.copyTo(roi_left);
+
+		cv::Mat roi_right = panorama(cv::Rect(465, 0, right_rotated.cols, right_rotated.rows));
+		right_rotated.copyTo(roi_right);
+
+		// Write frame to output video
+		out.write(panorama);
+		success_count++;
+
+		// Progress indication
+		if (frame_count % 30 == 0 || frame_count == 1) {
+			cout << "[PROGRESS] Processed " << frame_count << " frames, written " << success_count << " frames" << endl;
+		}
+	}
+
+	// Release all resources
+	cap_f.release();
+	cap_b.release();
+	cap_l.release();
+	cap_r.release();
+	out.release();
+
+	cout << "===========================================" << endl;
+	cout << "[SUCCESS] Video processing completed" << endl;
+	cout << "  Total frames processed: " << frame_count << endl;
+	cout << "  Frames written: " << success_count << endl;
+	cout << "  Output video: " << output_video << endl;
+	cout << "===========================================" << endl;
+
+	return 0;
+}
+
+// ========================================
 // Main function
 // ========================================
 
@@ -1276,12 +1501,56 @@ void join() {
  * @description Complete AVM processing pipeline: image undistortion, corner detection, perspective transformation, image stitching
  * @return Program execution status
  */
-int main() {
+int main(int argc, char *argv[]) {
+	// Check for command line arguments for video mode
+	if (argc >= 6) {
+		// Video mode: avm video <front.mp4> <back.mp4> <left.mp4> <right.mp4> [output.mp4]
+		if (string(argv[1]) == "video") {
+			string output = (argc >= 7) ? argv[6] : "build/stitched_output.mp4";
+			return processVideoMode(argv[2], argv[3], argv[4], argv[5], output);
+		}
+		else if (string(argv[1]) == "image") {
+			// Image mode: avm image (default behavior)
+			// Fall through to image processing code
+		}
+		else {
+			cout << "Usage:" << endl;
+			cout << "  Image mode (default): avm" << endl;
+			cout << "  Video mode: avm video <front.mp4> <back.mp4> <left.mp4> <right.mp4> [output.mp4]" << endl;
+			return -1;
+		}
+	}
+	else if (argc >= 2) {
+		if (string(argv[1]) == "help" || string(argv[1]) == "--help" || string(argv[1]) == "-h") {
+			cout << "===========================================" << endl;
+			cout << "Around View Monitor (AVM) System - Help" << endl;
+			cout << "===========================================" << endl;
+			cout << "\nUsage modes:" << endl;
+			cout << "\n1. Image Mode (default):" << endl;
+			cout << "   ./avm" << endl;
+			cout << "   Processes static images from assets/images/ folder:" << endl;
+			cout << "   - front.png, back.png, left.png, right.png" << endl;
+			cout << "   Output: build/stitched_result_with_su7.jpg" << endl;
+			cout << "\n2. Video Mode:" << endl;
+			cout << "   ./avm video <front_video> <back_video> <left_video> <right_video> [output_video]" << endl;
+			cout << "   Parameters:" << endl;
+			cout << "   - <front_video>: Path to front camera video file (mp4, avi, etc.)" << endl;
+			cout << "   - <back_video>: Path to back camera video file" << endl;
+			cout << "   - <left_video>: Path to left camera video file" << endl;
+			cout << "   - <right_video>: Path to right camera video file" << endl;
+			cout << "   - [output_video]: Output video path (default: build/stitched_output.mp4)" << endl;
+			cout << "\n   Example:" << endl;
+			cout << "   ./avm video front.mp4 back.mp4 left.mp4 right.mp4 output.mp4" << endl;
+			cout << "\n===========================================" << endl;
+			return 0;
+		}
+	}
+
+	// Default: Image processing mode
 	cout << "===========================================" << endl;
 	cout << "[SYSTEM] Around View Monitor (AVM) System Started" << endl;
+	cout << "[MODE] Image Processing Mode" << endl;
 	cout << "===========================================" << endl;
-
-	// Create output directory
 	struct stat st = { 0 };
 	if (stat("build", &st) == -1) {
 		if (mkdir("build", 0755) == 0) {

@@ -13,6 +13,11 @@ An OpenCV-based 360-degree surround view system that processes fisheye camera im
 - **Perspective Transformation**: Converts undistorted images to bird's eye view
 - **Seamless Stitching**: Blends multiple camera views into a single panoramic image
 - **Vehicle Overlay**: Adds vehicle model overlay for spatial reference
+- **Video Processing** ✨ **NEW!**: Process synchronized multi-camera video streams for real-time stitching
+  - Supports multiple video formats (MP4, AVI, MOV, etc.)
+  - Automatic per-video calibration using first frame
+  - Maintains original video frame rate
+  - Efficient frame-by-frame processing
 
 ## 🛠️ Installation
 
@@ -41,11 +46,50 @@ For detailed installation instructions, see [INSTALLATION.md](docs/INSTALLATION.
 
 ## 🚀 Quick Start
 
-### Run with Sample Data
+### Image Mode (Default)
+
+Process static fisheye images to generate a panoramic view:
 
 ```bash
 # Execute the AVM system with provided sample images
 ./scripts/run.sh
+```
+
+### Video Mode (NEW!)
+
+Process video streams from four synchronized fisheye cameras:
+
+#### Using Bash Shell (Linux/macOS/WSL2)
+
+```bash
+# Basic usage (output to build/stitched_output.mp4)
+./scripts/process_video.sh front.mp4 back.mp4 left.mp4 right.mp4
+
+# Specify custom output file
+./scripts/process_video.sh front.mp4 back.mp4 left.mp4 right.mp4 my_output.mp4
+```
+
+#### Using PowerShell (Windows)
+
+```powershell
+# Basic usage (output to build/stitched_output.mp4)
+.\scripts\process_video.ps1 -Front front.mp4 -Back back.mp4 -Left left.mp4 -Right right.mp4
+
+# Specify custom output file
+.\scripts\process_video.ps1 -Front front.mp4 -Back back.mp4 -Left left.mp4 -Right right.mp4 -Output my_output.mp4
+```
+
+#### Direct Command Line
+
+```bash
+# Image mode (default)
+./build/bin/avm
+
+# Video mode
+./build/bin/avm video front.mp4 back.mp4 left.mp4 right.mp4 output.mp4
+
+# Show help
+./build/bin/avm help
 ```
 
 ### Expected Output
@@ -283,6 +327,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - **Documentation**: Check [docs/](docs/) directory for detailed guides
+- **Video Stitching**: See [docs/VIDEO_STITCHING.md](docs/VIDEO_STITCHING.md) for detailed video processing guide
+- **Installation**: See [docs/INSTALLATION.md](docs/INSTALLATION.md) for setup instructions
+- **Technical Specifications**: See [docs/TECHNICAL_SPECS.md](docs/TECHNICAL_SPECS.md) for system details
 
 ---
 
